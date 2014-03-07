@@ -1,17 +1,73 @@
+import codecs
+from ConfigParser import ConfigParser
+import optparse
+import os
+import subprocess
+import sys
+
+import six
 import twiggy
 from twiggy import log
 from twiggy.levels import name2level
 
-import os
-import optparse
-import sys
-
-from ConfigParser import ConfigParser, NoOptionError
-
 
 def asbool(some_value):
     """ Cast config values to boolean. """
-    return str(some_value).lower() in ['y', 'yes', 't', 'true', '1', 'on']
+    return six.text_type(some_value).lower() in [
+        'y', 'yes', 't', 'true', '1', 'on'
+    ]
+
+
+def get_service_password(service, username, oracle=None, interactive=False):
+    """
+    Retrieve the sensitive password for a service by:
+
+      * retrieving password from a secure store (@oracle:use_keyring, default)
+      * asking the password from the user (@oracle:ask_password, interactive)
+      * executing a command and use the output as password
+        (@oracle:eval:<command>)
+
+    Note that the keyring may or may not be locked
+    which requires that the user provides a password (interactive mode).
+
+    :param service:     Service name, may be key into secure store (as string).
+    :param username:    Username for the service (as string).
+    :param oracle:      Hint which password oracle strategy to use.
+    :return: Retrieved password (as string)
+
+    .. seealso::
+        https://bitbucket.org/kang/python-keyring-lib
+    """
+    import getpass
+    import keyring
+
+    password = None
+    if not oracle or oracle == "@oracle:use_keyring":
+        password = keyring.get_password(service, username)
+        if interactive and password is None:
+            # -- LEARNING MODE: Password is not stored in keyring yet.
+            oracle = "@oracle:ask_password"
+            password = get_service_password(service, username,
+                                            oracle, interactive=True)
+            if password:
+                keyring.set_password(service, username, password)
+    elif interactive and oracle == "@oracle:ask_password":
+        prompt = "%s password: " % service
+        password = getpass.getpass(prompt)
+    elif oracle.startswith('@oracle:eval:'):
+        command = oracle[13:]
+        p = subprocess.Popen(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT
+        )
+        password = p.stdout.read()[:-1]
+
+    if password is None:
+        die("MISSING PASSWORD: oracle='%s', interactive=%s for service=%s" %
+            (oracle, interactive, service))
+    return password
 
 
 def load_example_rc():
@@ -47,6 +103,7 @@ from bugwarrior.services import SERVICES
 def parse_args():
     p = optparse.OptionParser()
     p.add_option('-f', '--config', default='~/.bugwarriorrc')
+    p.add_option('-i', '--interactive', action='store_true', default=False)
     return p.parse_args()
 
 
@@ -69,12 +126,6 @@ def validate_config(config):
         if target not in config.sections():
             die("No [%s] section found." % target)
 
-    for option in ['bitly.api_user', 'bitly.api_key']:
-        if not config.has_option('general', option):
-            log.name('config').warning(
-                "URLs will not be shortened with bit.ly"
-            )
-
     # Validate each target one by one.
     for target in targets:
         service = config.get(target, 'service')
@@ -92,8 +143,14 @@ def load_config():
     opts, args = parse_args()
 
     config = ConfigParser({'log.level': "DEBUG", 'log.file': None})
-    config.read(os.path.expanduser(opts.config))
-
+    config.readfp(
+        codecs.open(
+            os.path.expanduser(opts.config),
+            "r",
+            "utf-8",
+        )
+    )
+    config.interactive = opts.interactive
     validate_config(config)
 
     return config

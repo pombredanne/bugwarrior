@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 
-version = '0.6.1'
+version = '0.7.0'
 
 f = open('bugwarrior/README.rst')
 long_description = f.read().strip()
@@ -29,13 +29,25 @@ setup(name='bugwarrior',
       zip_safe=False,
       install_requires=[
           "twiggy",
-          "bitlyapi",
           "requests",
           "offtrac",
           "python-bugzilla",
-          "jira-python",
-          "taskw >= 0.4.2",
-          "dogpile.cache",
+          #"jira-python",
+          #"taskw >= 0.8",
+          "dateutils >= 0.6.6",
+          "keyring",
+          "six",
+          "jinja2>=2.7.2",
+          "pycurl",
+          "bitlyapi>=0.1.1",
+          "dogpile.cache>=0.5.3",
+      ],
+      tests_require=[
+          "Mock",
+          "unittest2",
+          "nose",
+          "jira>=0.22",
+          "megaplan>=1.4",
       ],
       entry_points="""
       [console_scripts]

@@ -1,6 +1,41 @@
 Changelog
 =========
 
+0.7.0
+-----
+
+- Add some hacking instructions for @teranex. `340a5e2ea <https://github.com/ralphbean/bugwarrior/commit/340a5e2ea3bc87ef99f0afa006b5ea898205c1ad>`_
+- Add support for include_repos `265683b78 <https://github.com/ralphbean/bugwarrior/commit/265683b780f2831b4181f8b2bf3788fd3cc3d61c>`_
+- Merge pull request #88 from pypingou/develop `c7703c4f6 <https://github.com/ralphbean/bugwarrior/commit/c7703c4f6244b7c153b68ef204eb6f1fdce914a6>`_
+- Add @oracle:eval:<command> option to get the password from an external command `47d3cf189 <https://github.com/ralphbean/bugwarrior/commit/47d3cf189c339a86f210057fb815d512506a3475>`_
+- Merge pull request #89 from puiterwijk/add-oracle-eval `d47f90d78 <https://github.com/ralphbean/bugwarrior/commit/d47f90d78253b8009f76dd9fe65509c88dc248b7>`_
+- Use new taskw lingo. `bf1ea4ff1 <https://github.com/ralphbean/bugwarrior/commit/bf1ea4ff1ca557f56e0796cc4dee247caada87fa>`_
+- Handle a bunch of contingencies for python-bugzilla>=0.9.0 `ee4df9935 <https://github.com/ralphbean/bugwarrior/commit/ee4df99353e79f2224bab266f8cbd676445f186d>`_
+- Conditionalize jira inclusion. `423040cea <https://github.com/ralphbean/bugwarrior/commit/423040ceac540d476eaebf83d308f4cf0376fccd>`_
+- Merge pull request #90 from ralphbean/feature/new-taskw `ce574868d <https://github.com/ralphbean/bugwarrior/commit/ce574868df09c16b70da4bc93079bcf9ed4bed84>`_
+- Knock out jira-python by default for now. `b4f8112a2 <https://github.com/ralphbean/bugwarrior/commit/b4f8112a282aece5f9a4042cb6dd9fb3107def18>`_
+
+0.6.3
+-----
+
+- Another tweak for #85. `b732b4f47 <https://github.com/ralphbean/bugwarrior/commit/b732b4f47616bd9f281a72c91bf8f17b2aaf04b1>`_
+
+0.6.2
+-----
+
+- Issue #82: Implement mechanism for asking the user or a keyring for passwords (see: bugwarrior.config:get_service_password()). `ad0c1729d <https://github.com/ralphbean/bugwarrior/commit/ad0c1729d5e6a8d5ff5e2efe08651b8d4fa4e260>`_
+- Issue #82 related: Cleanup some debug statements. `7f98990cd <https://github.com/ralphbean/bugwarrior/commit/7f98990cd4fa36c791dda61802ef065785626d56>`_
+- Issue #82 related: Some pep8 cleanup. `d915515a1 <https://github.com/ralphbean/bugwarrior/commit/d915515a1459045123b342cd1e197f33eb651a38>`_
+- Issue #82 related: Add example description for password lookup strategies. `2cb57e752 <https://github.com/ralphbean/bugwarrior/commit/2cb57e7528d7d336247ebcf68f69cec29c13b6c9>`_
+- Merge pull request #83 from jenisys/feature/ask_password `d2a7f6695 <https://github.com/ralphbean/bugwarrior/commit/d2a7f669589e769a814a075f7bb29db4cc2f0772>`_
+- Bitbucket with authorization and on requests `1b74cc0a9 <https://github.com/ralphbean/bugwarrior/commit/1b74cc0a9a3c0f9ec8e8e1495bd054c09a983abd>`_
+- Bitbucket - password asking logic `c388c6b89 <https://github.com/ralphbean/bugwarrior/commit/c388c6b895051d49a0cd48f5e5bb8e40f7e5b690>`_
+- Reformat by pep8 `5b2556247 <https://github.com/ralphbean/bugwarrior/commit/5b2556247ffd288e7e6c313f0827808b45349ff2>`_
+- Merge pull request #84 from paulrzcz/develop `f25be82a0 <https://github.com/ralphbean/bugwarrior/commit/f25be82a05bd66318b3c296dda63c7ffc5d30258>`_
+- Make bitbucket authn optional. `84a0c51b6 <https://github.com/ralphbean/bugwarrior/commit/84a0c51b68eca7df5f91125298d32c38de121ae7>`_
+- Try to support older bugzilla instances. `474e61eb8 <https://github.com/ralphbean/bugwarrior/commit/474e61eb8d2204855f6496b0bfa56f0e1aede3b4>`_
+- Update only_if_assigned github logic for #85. `86a0dd6c2 <https://github.com/ralphbean/bugwarrior/commit/86a0dd6c2cbb112c76d1c8c92907ff6ff69d0c79>`_
+
 0.6.1
 -----
 

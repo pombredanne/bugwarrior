@@ -1,30 +1,124 @@
+from jinja2 import Template
+import six
 from twiggy import log
 
-from bugwarrior.services import IssueService
-from bugwarrior.config import die
+from bugwarrior.config import asbool, die, get_service_password
+from bugwarrior.services import IssueService, Issue
 
-import githubutils
-import datetime
-import time
+from . import githubutils
+
+
+class GithubIssue(Issue):
+    TITLE = 'githubtitle'
+    URL = 'githuburl'
+    TYPE = 'githubtype'
+    NUMBER = 'githubnumber'
+
+    UDAS = {
+        TITLE: {
+            'type': 'string',
+            'label': 'Github Title',
+        },
+        URL: {
+            'type': 'string',
+            'label': 'Github URL',
+        },
+        TYPE: {
+            'type': 'string',
+            'label': 'Github Type',
+        },
+        NUMBER: {
+            'type': 'numeric',
+            'label': 'Github Issue/PR #',
+        },
+    }
+    UNIQUE_KEY = (URL, )
+
+    def to_taskwarrior(self):
+        return {
+            'project': self.extra['project'],
+            'priority': self.origin['default_priority'],
+            'annotations': self.extra.get('annotations', []),
+            'tags': self.get_tags(),
+
+            self.URL: self.record['html_url'],
+            self.TYPE: self.extra['type'],
+            self.TITLE: self.record['title'],
+            self.NUMBER: self.record['number'],
+        }
+
+    def get_tags(self):
+        tags = []
+
+        if not self.origin['import_labels_as_tags']:
+            return tags
+
+        context = self.record.copy()
+        label_template = Template(self.origin['label_template'])
+
+        for label_dict in self.record.get('labels', []):
+            context.update({
+                'label': label_dict['name']
+            })
+            tags.append(
+                label_template.render(context)
+            )
+
+        return tags
+
+    def get_default_description(self):
+        return self.build_default_description(
+            title=self.record['title'],
+            url=self.get_processed_url(self.record['html_url']),
+            number=self.record['number'],
+            cls=self.extra['type'],
+        )
 
 
 class GithubService(IssueService):
+    ISSUE_CLASS = GithubIssue
+    CONFIG_PREFIX = 'github'
+
     def __init__(self, *args, **kw):
         super(GithubService, self).__init__(*args, **kw)
 
-        login = self.config.get(self.target, 'login')
-        passw = self.config.get(self.target, 'passw')
-
-        self.auth = (login, passw)
+        login = self.config_get('login')
+        password = self.config_get_default('password')
+        if not password or password.startswith('@oracle:'):
+            username = self.config_get('username')
+            service = "github://%s@github.com/%s" % (login, username)
+            password = get_service_password(
+                service, login, oracle=password,
+                interactive=self.config.interactive
+            )
+        self.auth = (login, password)
 
         self.exclude_repos = []
-
-        if self.config.has_option(self.target, 'exclude_repos'):
+        if self.config_get_default('exclude_repos', None):
             self.exclude_repos = [
                 item.strip() for item in
-                self.config.get(self.target, 'exclude_repos')
-                    .strip().split(',')
+                self.config_get('exclude_repos').strip().split(',')
             ]
+
+        self.include_repos = []
+        if self.config_get_default('include_repos', None):
+            self.include_repos = [
+                item.strip() for item in
+                self.config_get('include_repos').strip().split(',')
+            ]
+
+        self.import_labels_as_tags = self.config_get_default(
+            'import_labels_as_tags', default=False, to_type=asbool
+        )
+        self.label_template = self.config_get_default(
+            'label_template', default='{{label}}', to_type=six.text_type
+        )
+
+    def get_service_metadata(self):
+        return {
+            'import_labels_as_tags': self.import_labels_as_tags,
+            'label_template': self.label_template,
+        }
 
     def _issues(self, tag):
         """ Grab all the issues """
@@ -39,13 +133,12 @@ class GithubService(IssueService):
 
     def annotations(self, tag, issue):
         comments = self._comments(tag, issue['number'])
-        return dict([
-            self.format_annotation(
-                datetime.datetime.fromtimestamp(time.mktime(time.strptime(
-                    c['created_at'], "%Y-%m-%dT%H:%M:%SZ"))),
+        return self.build_annotations(
+            (
                 c['user']['login'],
                 c['body'],
-            ) for c in comments])
+            ) for c in comments
+        )
 
     def _reqs(self, tag):
         """ Grab all the pull requests """
@@ -55,65 +148,74 @@ class GithubService(IssueService):
         ]
 
     def get_owner(self, issue):
-        return issue[1]['assignee']
+        if issue[1]['assignee']:
+            return issue[1]['assignee']['login']
 
-    def filter_repos(self, repo):
-        if not (repo['has_issues'] and repo['open_issues_count'] > 0):
-            return False
-
+    def _filter_repos_base(self, repo):
         if self.exclude_repos:
             if repo['name'] in self.exclude_repos:
                 return False
 
+        if self.include_repos:
+            if repo['name'] in self.include_repos:
+                return True
+            else:
+                return False
+
         return True
 
+    def filter_repos_for_prs(self, repo):
+        if repo['forks'] < 1:
+            return False
+        else:
+            return self._filter_repos_base(repo)
+
+    def filter_repos_for_issues(self, repo):
+        if not (repo['has_issues'] and repo['open_issues_count'] > 0):
+            return False
+        else:
+            return self._filter_repos_base(repo)
+
     def issues(self):
-        user = self.config.get(self.target, 'username')
+        user = self.config.get(self.target, 'github.username')
 
         all_repos = githubutils.get_repos(username=user, auth=self.auth)
         assert(type(all_repos) == list)
 
-        repos = filter(self.filter_repos, all_repos)
+        repos = filter(self.filter_repos_for_issues, all_repos)
         issues = sum([self._issues(user + "/" + r['name']) for r in repos], [])
         log.name(self.target).debug(" Found {0} total.", len(issues))
         issues = filter(self.include, issues)
         log.name(self.target).debug(" Pruned down to {0}", len(issues))
 
         # Next, get all the pull requests (and don't prune)
-        has_requests = lambda repo: repo['forks'] > 1
-        repos = filter(has_requests, all_repos)
+        repos = filter(self.filter_repos_for_prs, all_repos)
         requests = sum([self._reqs(user + "/" + r['name']) for r in repos], [])
 
-        formatted_issues = [dict(
-            description=self.description(
-                issue['title'], issue['html_url'],
-                issue['number'], cls="issue"
-            ),
-            project=tag.split('/')[1],
-            priority=self.default_priority,
-            **self.annotations(tag, issue)
-        ) for tag, issue in issues]
+        for tag, issue in issues:
+            extra = {
+                'project': tag.split('/')[1],
+                'type': 'issue',
+                'annotations': self.annotations(tag, issue)
+            }
+            yield self.get_issue_for_record(issue, extra)
 
-        formatted_requests = [{
-            "description": self.description(
-                request['title'], request['html_url'],
-                request['number'], cls="pull_request"
-            ),
-            "project": tag.split('/')[1],
-            "priority": self.default_priority,
-        } for tag, request in requests]
-
-        return formatted_issues + formatted_requests
+        for tag, request in requests:
+            extra = {
+                'project': tag.split('/')[1],
+                'type': 'pull_request',
+            }
+            yield self.get_issue_for_record(request, extra)
 
     @classmethod
     def validate_config(cls, config, target):
-        if not config.has_option(target, 'login'):
-            die("[%s] has no 'login'" % target)
+        if not config.has_option(target, 'github.login'):
+            die("[%s] has no 'github.login'" % target)
 
-        if not config.has_option(target, 'passw'):
-            die("[%s] has no 'passw'" % target)
+        if not config.has_option(target, 'github.password'):
+            die("[%s] has no 'github.password'" % target)
 
-        if not config.has_option(target, 'username'):
-            die("[%s] has no 'username'" % target)
+        if not config.has_option(target, 'github.username'):
+            die("[%s] has no 'github.username'" % target)
 
-        IssueService.validate_config(config, target)
+        super(GithubService, cls).validate_config(config, target)
