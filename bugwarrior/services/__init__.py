@@ -2,17 +2,37 @@ import copy
 import multiprocessing
 import time
 
+from pkg_resources import iter_entry_points
+
 from dateutil.parser import parse as parse_date
+from dateutil.tz import tzlocal
 from jinja2 import Template
+import pytz
 import six
 from twiggy import log
 
+from taskw.task import Task
+
+from bugwarrior.config import asbool
 from bugwarrior.db import MARKUP, URLShortener, ABORT_PROCESSING
 
 
 # Sentinels for process completion status
 SERVICE_FINISHED_OK = 0
 SERVICE_FINISHED_ERROR = 1
+
+# Used by `parse_date` as a timezone when you would like a naive
+# date string to be parsed as if it were in your local timezone
+LOCAL_TIMEZONE = 'LOCAL_TIMEZONE'
+
+def get_service(service_name):
+    epoint = iter_entry_points(group='bugwarrior.service', name=service_name)
+    try:
+        epoint = epoint.next()
+    except StopIteration:
+        return None
+
+    return epoint.load()
 
 
 class IssueService(object):
@@ -22,36 +42,45 @@ class IssueService(object):
     # What prefix should we use for this service's configuration values
     CONFIG_PREFIX = ''
 
-    def __init__(self, config, target):
+    def __init__(self, config, main_section, target):
         self.config = config
+        self.main_section = main_section
         self.target = target
 
         self.desc_len = 35
-        if config.has_option('general', 'description_length'):
-            self.desc_len = self.config.getint('general', 'description_length')
+        if config.has_option(self.main_section, 'description_length'):
+            self.desc_len = self.config.getint(self.main_section, 'description_length')
 
         self.anno_len = 45
-        if config.has_option('general', 'annotation_length'):
-            self.anno_len = self.config.getint('general', 'annotation_length')
+        if config.has_option(self.main_section, 'annotation_length'):
+            self.anno_len = self.config.getint(self.main_section, 'annotation_length')
 
-        self.bitly_api_user = None
-        if config.has_option('general', 'bitly.api_user'):
-            self.bitly_api_user = config.get('general', 'bitly.api_user')
+        self.inline_links = True
+        if config.has_option(self.main_section, 'inline_links'):
+            self.inline_links = asbool(config.get(self.main_section, 'inline_links'))
 
-        self.bitly_api_key = None
-        if config.has_option('general', 'bitly.api_key'):
-            self.bitly_api_key = config.get('general', 'bitly.api_key')
-
-        self.description_template = None
-        if config.has_option(self.target, 'description_template'):
-            self.description_template = self.config.get(
-                self.target, 'description_template'
+        self.annotation_links = not self.inline_links
+        if config.has_option(self.main_section, 'annotation_links'):
+            self.annotation_links = asbool(
+                config.get(self.main_section, 'annotation_links')
             )
+
+        self.annotation_comments = True
+        if config.has_option(self.main_section, 'annotation_comments'):
+            self.annotation_comments = asbool(
+                config.get(self.main_section, 'annotation_comments')
+            )
+
+        self.shorten = False
+        if config.has_option(self.main_section, 'shorten'):
+            self.shorten = asbool(config.get(self.main_section, 'shorten'))
 
         self.add_tags = []
         if config.has_option(self.target, 'add_tags'):
-            for raw_option in self.config.get(self.target, 'add_tags').split():
-                option = raw_option.strip(' +,;')
+            for raw_option in self.config.get(
+                self.target, 'add_tags'
+            ).split(','):
+                option = raw_option.strip(' +;')
                 if option:
                     self.add_tags.append(option)
 
@@ -60,6 +89,40 @@ class IssueService(object):
             self.default_priority = config.get(self.target, 'default_priority')
 
         log.name(target).info("Working on [{0}]", self.target)
+
+    def get_templates(self):
+        """ Get any defined templates for configuration values.
+
+        Users can override the value of any Taskwarrior field using
+        this feature on a per-key basis.  The key should be the name of
+        the field to you would like to configure the value of, followed
+        by '_template', and the value should be a Jinja template
+        generating the field's value.  As context variables, all fields
+        on the taskwarrior record are available.
+
+        For example, to prefix the returned
+        project name for tickets returned by a service with 'workproject_',
+        you could add an entry reading:
+
+            project_template = workproject_{{project}}
+
+        Or, if you'd simply like to override the returned project name
+        for all tickets incoming from a specific service, you could add
+        an entry like:
+
+            project_template = myprojectname
+
+        The above would cause all issues to recieve a project name
+        of 'myprojectname', regardless of what the project name of the
+        generated issue was.
+
+        """
+        templates = {}
+        for key in six.iterkeys(Task.FIELDS):
+            template_key = '%s_template' % key
+            if self.config.has_option(self.target, template_key):
+                templates[key] = self.config.get(self.target, template_key)
+        return templates
 
     def config_get_default(self, key, default=None, to_type=None):
         try:
@@ -73,11 +136,9 @@ class IssueService(object):
             return to_type(value)
         return value
 
-    def _get_key(self, key):
-        return '%s.%s' % (
-            self.CONFIG_PREFIX,
-            key
-        )
+    @classmethod
+    def _get_key(cls, key):
+        return '%s.%s' % (cls.CONFIG_PREFIX, key)
 
     def get_service_metadata(self):
         return {}
@@ -87,28 +148,32 @@ class IssueService(object):
             'annotation_length': self.anno_len,
             'default_priority': self.default_priority,
             'description_length': self.desc_len,
-            'description_template': self.description_template,
+            'templates': self.get_templates(),
             'target': self.target,
-            'bitly_api_key': self.bitly_api_key,
-            'bitly_api_user': self.bitly_api_user,
+            'shorten': self.shorten,
+            'inline_links': self.inline_links,
             'add_tags': self.add_tags,
         }
         origin.update(self.get_service_metadata())
         return self.ISSUE_CLASS(record, origin=origin, extra=extra)
 
-    def build_annotations(self, annotations):
+    def build_annotations(self, annotations, url):
         final = []
-        for author, message in annotations:
-            if not message or not author:
-                continue
-            message = message.replace('\n', '').replace('\r', '')
-            final.append(
-                '@%s - %s%s' % (
-                    author,
-                    message[0:self.anno_len],
-                    '...' if len(message) > self.anno_len else ''
+        if self.annotation_links:
+            final.append(url)
+        if self.annotation_comments:
+            for author, message in annotations:
+                message = message.strip()
+                if not message or not author:
+                    continue
+                message = message.replace('\n', '').replace('\r', '')
+                final.append(
+                    '@%s - %s%s' % (
+                        author,
+                        message[0:self.anno_len],
+                        '...' if len(message) > self.anno_len else ''
+                    )
                 )
-            )
         return final
 
     @classmethod
@@ -179,6 +244,11 @@ class IssueService(object):
         """
         raise NotImplementedError()
 
+    @classmethod
+    def get_keyring_service(cls, config, section):
+        """ Given the keyring service name for this service. """
+        raise NotImplementedError
+
 
 class Issue(object):
     # Set to a dictionary mapping UDA short names with type and long name.
@@ -210,6 +280,9 @@ class Issue(object):
         self._origin = origin if origin else {}
         self._extra = extra if extra else {}
 
+    def update_extra(self, extra):
+        self._extra.update(extra)
+
     def to_taskwarrior(self):
         """ Transform a foreign record into a taskwarrior dictionary."""
         raise NotImplementedError()
@@ -226,15 +299,25 @@ class Issue(object):
         """
         raise NotImplementedError()
 
-    def get_taskwarrior_record(self, with_description=True):
+    def get_added_tags(self):
+        added_tags = []
+        for tag in self.origin['add_tags']:
+            tag = Template(tag).render(self.get_template_context())
+            if tag:
+                added_tags.append(tag)
+
+        return added_tags
+
+    def get_taskwarrior_record(self, refined=True):
         if not getattr(self, '_taskwarrior_record', None):
             self._taskwarrior_record = self.to_taskwarrior()
         record = copy.deepcopy(self._taskwarrior_record)
-        if with_description:
-            record['description'] = self.get_rendered_description()
+        if refined:
+            record = self.refine_record(record)
         if not 'tags' in record:
             record['tags'] = []
-        record['tags'].extend(self.origin['add_tags'])
+        if refined:
+            record['tags'].extend(self.get_added_tags())
         return record
 
     def get_priority(self):
@@ -246,25 +329,35 @@ class Issue(object):
     def get_processed_url(self, url):
         """ Returns a URL with conditional processing.
 
-        If the following config keys are set:
+        If the following config key are set:
 
-        - [general]bitly.api_user
-        - [general]bitly.api_key
+        - [general]shorten
 
         returns a shortened URL; otherwise returns the URL unaltered.
 
         """
-        if (self.origin['bitly_api_user'] and self.origin['bitly_api_key']):
-            shortener = URLShortener(
-                self.origin['bitly_api_user'],
-                self.origin['bitly_api_key'],
-            )
-            return shortener.shorten(url)
+        if self.origin['shorten']:
+            return URLShortener().shorten(url)
         return url
 
-    def parse_date(self, date):
+    def parse_date(self, date, timezone='UTC'):
+        """ Parse a date string into a datetime object.
+
+        :param `date`: A time string parseable by `dateutil.parser.parse`
+        :param `timezone`: The string timezone name (from `pytz.all_timezones`)
+            to use as a default should the parsed time string not include
+            timezone information.
+
+        """
         if date:
-            return parse_date(date)
+            date = parse_date(date)
+            if not date.tzinfo:
+                if timezone == LOCAL_TIMEZONE:
+                    tzinfo = tzlocal()
+                else:
+                    tzinfo = pytz.timezone(timezone)
+                date = date.replace(tzinfo=tzinfo)
+            return date
         return None
 
     def build_default_description(
@@ -273,10 +366,12 @@ class Issue(object):
         cls_markup = {
             'issue': 'Is',
             'pull_request': 'PR',
+            'merge_request': 'MR',
             'task': '',
             'subtask': 'Subtask #',
         }
         url_separator = ' .. '
+        url = url if self.origin['inline_links'] else ''
         return "%s%s#%s - %s%s%s" % (
             MARKUP,
             cls_markup[cls],
@@ -292,16 +387,24 @@ class Issue(object):
             (key, record[key],) for key in self.UNIQUE_KEY
         ])
 
-    def get_rendered_description(self):
-        if not hasattr(self, '_description'):
-            if self.origin['description_template']:
-                record = self.get_taskwarrior_record(with_description=False)
-                context = record.copy()
-                context.update(self.extra)
-                template = Template(self.origin['description_template'])
-                return template.render(context)
-            self._description = self.get_default_description()
-        return self._description
+    def get_template_context(self):
+        context = (
+            self.get_taskwarrior_record(refined=False).copy()
+        )
+        context.update(self.extra)
+        context.update({
+            'description': self.get_default_description(),
+        })
+        return context
+
+    def refine_record(self, record):
+        for field in six.iterkeys(Task.FIELDS):
+            if field in self.origin['templates']:
+                template = Template(self.origin['templates'][field])
+                record[field] = template.render(self.get_template_context())
+            elif hasattr(self, 'get_default_%s' % field):
+                record[field] = getattr(self, 'get_default_%s' % field)()
+        return record
 
     def __iter__(self):
         record = self.get_taskwarrior_record()
@@ -363,7 +466,7 @@ class Issue(object):
     def __unicode__(self):
         return '%s: %s' % (
             self.origin['target'],
-            self.get_rendered_description()
+            self.get_taskwarrior_record()['description']
         )
 
     def __str__(self):
@@ -373,7 +476,7 @@ class Issue(object):
         return '<%s>' % self.__unicode__()
 
 
-def _aggregate_issues(conf, target, queue, service_name):
+def _aggregate_issues(conf, main_section, target, queue, service_name):
     """ This worker function is separated out from the main
     :func:`aggregate_issues` func only so that we can use multiprocessing
     on it for speed reasons.
@@ -382,7 +485,7 @@ def _aggregate_issues(conf, target, queue, service_name):
     start = time.time()
 
     try:
-        service = SERVICES[service_name](conf, target)
+        service = get_service(service_name)(conf, main_section, target)
         issue_count = 0
         for issue in service.issues():
             queue.put(issue)
@@ -403,24 +506,44 @@ def _aggregate_issues(conf, target, queue, service_name):
         log.name(target).info("Done with [%s] in %fs" % (target, duration))
 
 
-def aggregate_issues(conf):
+def aggregate_issues(conf, main_section):
     """ Return all issues from every target. """
     log.name('bugwarrior').info("Starting to aggregate remote issues.")
 
     # Create and call service objects for every target in the config
-    targets = [t.strip() for t in conf.get('general', 'targets').split(',')]
+    targets = [t.strip() for t in conf.get(main_section, 'targets').split(',')]
 
     queue = multiprocessing.Queue()
 
     log.name('bugwarrior').info("Spawning %i workers." % len(targets))
     processes = []
-    for target in targets:
-        proc = multiprocessing.Process(
-            target=_aggregate_issues,
-            args=(conf, target, queue, conf.get(target, 'service'))
-        )
-        proc.start()
-        processes.append(proc)
+
+    if (
+        conf.has_option(main_section, 'development')
+        and asbool(conf.get(main_section, 'development'))
+    ):
+        for target in targets:
+            _aggregate_issues(
+                conf,
+                main_section,
+                target,
+                queue,
+                conf.get(target, 'service')
+            )
+    else:
+        for target in targets:
+            proc = multiprocessing.Process(
+                target=_aggregate_issues,
+                args=(conf, main_section, target, queue, conf.get(target, 'service'))
+            )
+            proc.start()
+            processes.append(proc)
+
+            # Sleep for 1 second here to try and avoid a race condition where
+            # all N workers start up and ask the gpg-agent process for
+            # information at the same time.  This causes gpg-agent to fumble
+            # and tell some of our workers some incomplete things.
+            time.sleep(1)
 
     currently_running = len(targets)
     while currently_running > 0:
@@ -437,38 +560,3 @@ def aggregate_issues(conf):
         yield issue
 
     log.name('bugwarrior').info("Done aggregating remote issues.")
-
-
-from .activecollab2 import ActiveCollab2Service
-from .activecollab3 import ActiveCollab3Service
-from .bitbucket import BitbucketService
-from .bz import BugzillaService
-from .github import GithubService
-from .teamlab import TeamLabService
-from .redmine import RedMineService
-from .trac import TracService
-
-
-# Constant dict to be used all around town.
-SERVICES = {
-    'github': GithubService,
-    'bitbucket': BitbucketService,
-    'trac': TracService,
-    'bugzilla': BugzillaService,
-    'teamlab': TeamLabService,
-    'redmine': RedMineService,
-    'activecollab2': ActiveCollab2Service,
-    'activecollab3': ActiveCollab3Service,
-}
-
-try:
-    from .jira import JiraService
-    SERVICES['jira'] = JiraService
-except ImportError:
-    pass
-
-try:
-    from .mplan import MegaplanService
-    SERVICES['megaplan'] = MegaplanService
-except ImportError:
-    pass

@@ -1,6 +1,9 @@
 import bugzilla
 from twiggy import log
 
+import time
+import pytz
+import datetime
 import six
 
 from bugwarrior.config import die, asbool, get_service_password
@@ -10,6 +13,9 @@ from bugwarrior.services import IssueService, Issue
 class BugzillaIssue(Issue):
     URL = 'bugzillaurl'
     SUMMARY = 'bugzillasummary'
+    BUG_ID = 'bugzillabugid'
+    STATUS = 'bugzillastatus'
+    NEEDINFO = 'bugzillaneedinfo'
 
     UDAS = {
         URL: {
@@ -19,7 +25,19 @@ class BugzillaIssue(Issue):
         SUMMARY: {
             'type': 'string',
             'label': 'Bugzilla Summary',
-        }
+        },
+        STATUS: {
+            'type': 'string',
+            'label': 'Bugzilla Status',
+        },
+        BUG_ID: {
+            'type': 'numeric',
+            'label': 'Bugzilla Bug ID',
+        },
+        NEEDINFO: {
+            'type': 'date',
+            'label': 'Bugzilla Needinfo',
+        },
     }
     UNIQUE_KEY = (URL, )
 
@@ -32,14 +50,20 @@ class BugzillaIssue(Issue):
     }
 
     def to_taskwarrior(self):
-        return {
+        task = {
             'project': self.record['component'],
             'priority': self.get_priority(),
             'annotations': self.extra.get('annotations', []),
 
             self.URL: self.extra['url'],
             self.SUMMARY: self.record['summary'],
+            self.BUG_ID: self.record['id'],
+            self.STATUS: self.record['status'],
         }
+        if self.extra.get('needinfo_since', None) is not None:
+            task[self.NEEDINFO] = self.extra.get('needinfo_since')
+
+        return task
 
     def get_default_description(self):
         return self.build_default_description(
@@ -50,27 +74,31 @@ class BugzillaIssue(Issue):
         )
 
 
+_open_statuses = [
+    'NEW',
+    'ASSIGNED',
+    'NEEDINFO',
+    'ON_DEV',
+    'MODIFIED',
+    'POST',
+    'REOPENED',
+    'ON_QA',
+    'FAILS_QA',
+    'PASSES_QA',
+]
+
+
 class BugzillaService(IssueService):
     ISSUE_CLASS = BugzillaIssue
     CONFIG_PREFIX = 'bugzilla'
 
-    OPEN_STATUSES = [
-        'NEW',
-        'ASSIGNED',
-        'NEEDINFO',
-        'ON_DEV',
-        'MODIFIED',
-        'POST',
-        'REOPENED',
-        'ON_QA',
-        'FAILS_QA',
-        'PASSES_QA',
-    ]
     COLUMN_LIST = [
         'id',
+        'status',
         'summary',
         'priority',
         'component',
+        'flags',
         'longdescs',
     ]
 
@@ -79,6 +107,14 @@ class BugzillaService(IssueService):
         self.base_uri = self.config_get('base_uri')
         self.username = self.config_get('username')
         self.password = self.config_get('password')
+        self.ignore_cc = self.config_get_default('ignore_cc', default=False,
+                                                 to_type=lambda x: x == "True")
+        self.query_url = self.config_get_default('query_url', default=None)
+        self.include_needinfos = self.config_get_default(
+            'include_needinfos', False, to_type=lambda x: x == "True")
+        self.open_statuses = self.config_get_default(
+            'open_statuses', _open_statuses, to_type=lambda x: x.split(','))
+        log.name(self.target).debug(" filtering on statuses: {0}", self.open_statuses)
 
         # So more modern bugzilla's require that we specify
         # query_format=advanced along with the xmlrpc request.
@@ -89,15 +125,21 @@ class BugzillaService(IssueService):
         self.advanced = asbool(self.config_get_default('advanced', 'no'))
 
         if not self.password or self.password.startswith("@oracle:"):
-            service = "bugzilla://%s@%s" % (self.username, self.base_uri)
             self.password = get_service_password(
-                service, self.username, oracle=self.password,
+                self.get_keyring_service(self.config, self.target),
+                self.username, oracle=self.password,
                 interactive=self.config.interactive
             )
 
         url = 'https://%s/xmlrpc.cgi' % self.base_uri
         self.bz = bugzilla.Bugzilla(url=url)
         self.bz.login(self.username, self.password)
+
+    @classmethod
+    def get_keyring_service(cls, config, section):
+        username = config.get(section, cls._get_key('username'))
+        base_uri = config.get(section, cls._get_key('base_uri'))
+        return "bugzilla://%s@%s" % (username, base_uri)
 
     @classmethod
     def validate_config(cls, config, target):
@@ -113,14 +155,19 @@ class BugzillaService(IssueService):
         # used by this IssueService.
         raise NotImplementedError
 
-    def annotations(self, tag, issue):
+    def annotations(self, tag, issue, issue_obj):
+        base_url = "https://%s/show_bug.cgi?id=" % self.base_uri
+        long_url = base_url + six.text_type(issue['id'])
+        url = issue_obj.get_processed_url(long_url)
+
         if 'comments' in issue:
             comments = issue.get('comments', [])
             return self.build_annotations(
-                (
+                ((
                     c['author'].split('@')[0],
                     c['text'],
-                ) for c in comments
+                ) for c in comments),
+                url
             )
         else:
             # Backwards compatibility (old python-bugzilla/bugzilla instances)
@@ -139,26 +186,33 @@ class BugzillaService(IssueService):
                 return obj.get('text', obj.get('body'))
 
             return self.build_annotations(
-                (
+                ((
                     _parse_author(c['author']),
                     _parse_body(c)
-                ) for c in issue['longdescs']
+                ) for c in comments),
+                url
             )
 
     def issues(self):
         email = self.username
         # TODO -- doing something with blockedby would be nice.
 
-        query = dict(
-            column_list=self.COLUMN_LIST,
-            bug_status=self.OPEN_STATUSES,
-            email1=email,
-            emailreporter1=1,
-            emailcc1=1,
-            emailassigned_to1=1,
-            emailqa_contact1=1,
-            emailtype1="substring",
-        )
+        if self.query_url:
+            query = self.bz.url_to_query(self.query_url)
+            query['column_list'] = self.COLUMN_LIST
+        else:
+            query = dict(
+                column_list=self.COLUMN_LIST,
+                bug_status=self.open_statuses,
+                email1=email,
+                emailreporter1=1,
+                emailassigned_to1=1,
+                emailqa_contact1=1,
+                emailtype1="substring",
+            )
+
+            if not self.ignore_cc:
+                query['emailcc1'] = 1
 
         if self.advanced:
             # Required for new bugzilla
@@ -167,10 +221,22 @@ class BugzillaService(IssueService):
 
         bugs = self.bz.query(query)
 
+        if self.include_needinfos:
+            needinfos = self.bz.query(dict(
+                column_list=self.COLUMN_LIST,
+                quicksearch='flag:needinfo?%s' % email,
+            ))
+            exists = [b.id for b in bugs]
+            for bug in needinfos:
+                # don't double-add bugs that have already been found
+                if bug.id in exists:
+                    continue
+                bugs.append(bug)
+
         # Convert to dicts
         bugs = [
             dict(
-                ((col, getattr(bug, col)) for col in self.COLUMN_LIST)
+                ((col, _get_bug_attr(bug, col)) for col in self.COLUMN_LIST)
             ) for bug in bugs
         ]
 
@@ -180,8 +246,30 @@ class BugzillaService(IssueService):
         # Build a url for each issue
         base_url = "https://%s/show_bug.cgi?id=" % (self.base_uri)
         for tag, issue in issues:
+            issue_obj = self.get_issue_for_record(issue)
             extra = {
                 'url': base_url + six.text_type(issue['id']),
-                'annotations': self.annotations(tag, issue),
+                'annotations': self.annotations(tag, issue, issue_obj),
             }
-            yield self.get_issue_for_record(issue, extra)
+
+            needinfos = filter(lambda f: (    f['name'] == 'needinfo'
+                                          and f['status'] == '?'
+                                          and f.get('requestee', self.username) == self.username),
+                               issue['flags'])
+            if needinfos:
+                last_mod = needinfos[0]['modification_date']
+                # convert from RPC DateTime string to datetime.datetime object
+                mod_date = datetime.datetime.fromtimestamp(
+                    time.mktime(last_mod.timetuple()))
+
+                extra['needinfo_since'] = pytz.UTC.localize(mod_date)
+
+            issue_obj.update_extra(extra)
+            yield issue_obj
+
+
+def _get_bug_attr(bug, attr):
+    """Default only the longdescs case to [] since it may not be present."""
+    if attr == "longdescs":
+        return getattr(bug, attr, [])
+    return getattr(bug, attr)

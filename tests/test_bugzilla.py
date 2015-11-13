@@ -20,13 +20,15 @@ class TestBugzillaService(ServiceTest):
         arbitrary_record = {
             'component': 'Something',
             'priority': 'urgent',
-            'annotations': [
-                'Two',
-            ],
-            'summary': 'This is the issue summary'
+            'status': 'NEW',
+            'summary': 'This is the issue summary',
+            'id': 1234567,
         }
         arbitrary_extra = {
             'url': 'http://path/to/issue/',
+            'annotations': [
+                'Two',
+            ],
         }
 
         issue = self.service.get_issue_for_record(
@@ -37,10 +39,12 @@ class TestBugzillaService(ServiceTest):
         expected_output = {
             'project': arbitrary_record['component'],
             'priority': issue.PRIORITY_MAP[arbitrary_record['priority']],
-            'annotations': arbitrary_record['annotations'],
+            'annotations': arbitrary_extra['annotations'],
 
+            issue.STATUS: arbitrary_record['status'],
             issue.URL: arbitrary_extra['url'],
             issue.SUMMARY: arbitrary_record['summary'],
+            issue.BUG_ID: arbitrary_record['id']
         }
         actual_output = issue.to_taskwarrior()
 

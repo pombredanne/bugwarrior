@@ -34,6 +34,16 @@ def get_repos(username, auth):
     return _getter(url, auth)
 
 
+def get_involved_issues(username, auth):
+    """ username should be a string
+    auth should be a tuple of username and password.
+    """
+
+    tmpl = "https://api.github.com/search/issues?q=involves%3A{username}&per_page=100"
+    url = tmpl.format(username=username)
+    return _getter(url, auth, subkey='items')
+
+
 def get_issues(username, repo, auth):
     """ username and repo should be strings
     auth should be a tuple of username and password.
@@ -41,6 +51,18 @@ def get_issues(username, repo, auth):
 
     tmpl = "https://api.github.com/repos/{username}/{repo}/issues?per_page=100"
     url = tmpl.format(username=username, repo=repo)
+    return _getter(url, auth)
+
+
+def get_directly_assigned_issues(auth):
+    """ Returns all issues assigned to authenticated user.
+
+    This will return all issues assigned to the authenticated user
+    regardless of whether the user owns the repositories in which the
+    issues exist.
+
+    """
+    url = "https://api.github.com/user/issues?per_page=100"
     return _getter(url, auth)
 
 
@@ -61,26 +83,40 @@ def get_pulls(username, repo, auth):
     return _getter(url, auth)
 
 
-def _getter(url, auth):
+def _getter(url, auth, subkey=None):
     """ Pagination utility.  Obnoxious. """
+
+    kwargs = {}
+
+    if 'token' in auth:
+        kwargs['headers'] = {
+            'Authorization': 'token ' + auth['token']
+        }
+    elif 'basic' in auth:
+        kwargs['auth'] = auth['basic']
 
     results = []
     link = dict(next=url)
     while 'next' in link:
-        response = requests.get(link['next'], auth=auth)
+        response = requests.get(link['next'], **kwargs)
+
+        if callable(response.json):
+            # Newer python-requests
+            json_res = response.json()
+        else:
+            # Older python-requests
+            json_res = response.json
 
         # And.. if we didn't get good results, just bail.
         if response.status_code != 200:
             raise IOError(
                 "Non-200 status code %r; %r; %r" % (
-                    response.status_code, url, response.json))
+                    response.status_code, url, json_res))
 
-        if callable(response.json):
-            # Newer python-requests
-            results += response.json()
-        else:
-            # Older python-requests
-            results += response.json
+        if subkey is not None:
+            json_res = json_res[subkey]
+
+        results += json_res
 
         link = _link_field_to_dict(response.headers.get('link', None))
 
