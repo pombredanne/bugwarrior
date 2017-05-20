@@ -3,7 +3,7 @@ from v1pysdk.none_deref import NoneDeref
 from six.moves.urllib import parse
 
 from bugwarrior.services import IssueService, Issue, LOCAL_TIMEZONE
-from bugwarrior.config import die, get_service_password
+from bugwarrior.config import die
 
 
 class VersionOneIssue(Issue):
@@ -181,32 +181,21 @@ class VersionOneService(IssueService):
         super(VersionOneService, self).__init__(*args, **kw)
 
         parsed_address = parse.urlparse(
-            self.config_get('base_uri')
+            self.config.get('base_uri')
         )
         self.address = parsed_address.netloc
         self.instance = parsed_address.path.strip('/')
-        self.username = self.config_get('username')
-        self.password = self.config_get_default('password')
-        if not self.password or self.password.startswith('@oracle:'):
-            self.password = get_service_password(
-                self.get_keyring_service(self.config, self.target),
-                self.username, oracle=self.password,
-                interactive=self.config.interactive
-            )
+        self.username = self.config.get('username')
+        self.password = self.get_password('password', self.username)
 
-        self.timezone = self.config_get_default(
-            'timezone',
-            default=LOCAL_TIMEZONE
-        )
-        self.project = self.config_get_default('project_name', default='')
-        self.timebox_name = self.config_get_default('timebox_name')
+        self.timezone = self.config.get('timezone', default=LOCAL_TIMEZONE)
+        self.project = self.config.get('project_name', default='')
+        self.timebox_name = self.config.get('timebox_name')
 
-    @classmethod
-    def get_keyring_service(cls, config, section):
-        parsed_address = parse.urlparse(
-            config.get(section, cls._get_key('base_uri'))
-        )
-        username = config.get(section, cls._get_key('username'))
+    @staticmethod
+    def get_keyring_service(service_config):
+        parsed_address = parse.urlparse(service_config.get('base_uri'))
+        username = service_config.get('username')
         return "versionone://%s@%s%s" % (
             username,
             parsed_address.netloc,
@@ -219,16 +208,16 @@ class VersionOneService(IssueService):
         }
 
     @classmethod
-    def validate_config(cls, config, target):
+    def validate_config(cls, service_config, target):
         options = (
-            'versionone.base_uri',
-            'versionone.username',
+            'base_uri',
+            'username',
         )
         for option in options:
-            if not config.has_option(target, option):
-                die("[%s] has no '%s'" % (target, option))
+            if option not in service_config:
+                die("[%s] has no 'versionone.%s'" % (target, option))
 
-        IssueService.validate_config(config, target)
+        IssueService.validate_config(service_config, target)
 
     def get_meta(self):
         if not hasattr(self, '_meta'):

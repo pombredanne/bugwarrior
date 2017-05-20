@@ -1,9 +1,9 @@
 How to Configure
 ================
 
-First, add a file named named ``.bugwarriorrc`` to your home folder.
-This file must include at least a ``[general]`` section including
-the following option:
+First, add a file named ``.config/bugwarrior/bugwarriorrc`` to your home
+folder.  This file must include at least a ``[general]`` section including the
+following option:
 
 * ``targets``: A comma-separated list of *other* section names to use
   as task sources.
@@ -13,11 +13,11 @@ Optional options include:
 * ``taskrc``: Specify which TaskRC configuration file to use.  By default,
   will use the system default (usually ``~/.taskrc``).
 * ``shorten``: Set to ``True`` to shorten links.
-* ``inline_link``: When ``False``, links are appended as an annotation.
+* ``inline_links``: When ``False``, links are appended as an annotation.
   Defaults to ``True``.
 * ``annotation_links``: When ``True`` will include a link to the ticket as an
   annotation. Defaults to ``False``.
-* ``annotation_comments``: When ``True`` skips putting issue comments into
+* ``annotation_comments``: When ``False`` skips putting issue comments into
   annotations. Defaults to ``True``.
 * ``legacy_matching``: Set to ``False`` to instruct Bugwarrior to match
   issues using only the issue's unique identifiers (rather than matching
@@ -29,17 +29,24 @@ Optional options include:
   written.  By default, logging messages will be written to stderr.
 * ``annotation_length``: Import maximally this number of characters
   of incoming annotations.  Default: 45.
+* ``description_length``: Use maximally this number of characters in the
+  description. Default: 35.
 * ``merge_annotations``: If ``False``, bugwarrior won't bother with adding
   annotations to your tasks at all.  Default: ``True``.
 * ``merge_tags``: If ``False``, bugwarrior won't bother with adding
   tags to your tasks at all.  Default: ``True``.
+* ``static_fields``: A comma separated list of attributes that shouldn't be
+  *updated* by bugwarrior.  Use for values that you want to tune manually.
+  Default: ``priority``.
 
 In addition to the ``[general]`` section, sections may be named
 ``[flavor.myflavor]`` and may be selected using the ``--flavor`` option to
 ``bugwarrior-pull``. This section will then be used rather than the
 ``[general]`` section.
 
-A more-detailed example configuration can be found at :ref:`example_configuration`.
+A more-detailed example configuration can be found at
+:ref:`example_configuration`.
+
 
 .. _common_configuration_options:
 
@@ -56,8 +63,6 @@ service example:
   that are not assigned to anybody.
 * ``default_priority``: Assign this priority ('L', 'M', or 'H') to
   newly-imported issues.
-* ``<fieldname>_template``: Generate the value of a field using a template.
-  See `Field Templates`_ for more details.
 * ``add_tags``: A comma-separated list of tags to add to an issue.  In most
   cases, this will just be a series of strings, but you can also make
   tags by defining one of your tags following the example set in
@@ -77,8 +82,8 @@ but depending upon your workflow, the information presented may not be
 useful to you.
 
 To help users build descriptions that suit their needs, all services allow
-one to specify a ``description_template`` configuration option, in which
-one can enter a one-line Jinja template.  The context available includes
+one to specify a ``SERVICE.description_template`` configuration option, in
+which one can enter a one-line Jinja template.  The context available includes
 all Taskwarrior fields and all UDAs (see section named 'Provided UDA Fields'
 for each service) defined for the relevant service.
 
@@ -96,20 +101,20 @@ create a service entry like this::
     [ralphs_github_account]
     service = github
     github.username = ralphbean
-    description_template = {{githubnumber}}: {{githubtitle}}
+    github.description_template = {{githubnumber}}: {{githubtitle}}
 
 You can also use this tool for altering the generated value of any other
 Taskwarrior record field by using the same kind of template.
 
 Uppercasing the project name for imported issues::
 
-    project_template = {{project|upper}}
+    SERVICE.project_template = {{project|upper}}
 
 You can also use this feature to override the generated value of any field.
 This example causes imported issues to be assigned to the 'Office' project
 regardless of what project was assigned by the service itself::
 
-    project_template = Office
+    SERVICE.project_template = Office
 
 Password Management
 -------------------
@@ -118,14 +123,18 @@ You need not store your password in plain text in your `bugwarriorrc` file;
 you can enter the following values to control where to gather your password
 from:
 
-* ``password = @oracle:use_keyring``: Retrieve a password from a keyring.
-* ``password = @oracle:ask_password``: Ask for a password at runtime.
-* ``password = @oracle:eval:<command>`` Use the output of <command> as the
-  password.
+``password = @oracle:use_keyring``
+  Retrieve a password from the system keyring.  The ``bugwarrior-vault``
+  command line tool can be used to manage your passwords as stored in your
+  keyring (say to reset them or clear them).  Extra dependencies must be
+  installed with `pip install bugwarrior[keyring]` to enable this feature.
+``password = @oracle:ask_password``
+  Ask for a password at runtime.
+``password = @oracle:eval:<command>``
+  Use the output of <command> as the password. For instance, to integrate
+  bugwarrior with the password manager `pass <https://www.passwordstore.org/>`_
+  you can use ``@oracle:eval:pass my/password``.
 
-If you use the ``use_keyring`` oracle, you may want to also check out the
-``bugwarrior-vault`` command line tool.  It can be used to manage your
-passwords as stored in your local keyring (say to reset them or clear them).
 
 Hooks
 -----
@@ -173,11 +182,49 @@ Backend options:
 +------------------+------------------+-------------------------+
 | ``gobject``      | Linux            | ``gobject``             |
 +------------------+------------------+-------------------------+
-| ``pynotify``     | Linux            | ``pynotify``            |
-+------------------+------------------+-------------------------+
 
 .. note::
 
    The ``finished_querying_sticky`` and ``task_crud_sticky`` options
    have no effect if you are using a notification backend other than
    ``growlnotify``.
+
+
+Configuration files
+-------------------
+
+bugwarrior will look at the following paths and read its configuration from the
+first existing file in this order:
+
+* :file:`~/.config/bugwarrior/bugwarriorrc`
+* :file:`~/.bugwarriorrc`
+* :file:`/etc/xdg/bugwarrior/bugwarriorrc`
+
+The default paths can be altered using the environment variables
+:envvar:`BUGWARRIORRC`, :envvar:`XDG_CONFIG_HOME` and
+:envvar:`XDG_CONFIG_DIRS`.
+
+
+Environment Variables
+---------------------
+
+.. envvar:: BUGWARRIORRC
+
+This overrides the default RC file.
+
+.. envvar:: XDG_CONFIG_HOME
+
+By default, :program:`bugwarrior` looks for a configuration file named
+``$XDG_CONFIG_HOME/bugwarrior/bugwarriorrc``.  If ``$XDG_CONFIG_HOME`` is
+either not set or empty, a default equal to ``$HOME/.config`` is used.
+
+.. envvar:: XDG_CONFIG_DIRS
+
+If it can't find a user-specific configuration file (either
+``$XDG_CONFIG_HOME/bugwarrior/bugwarriorrc`` or ``$HOME/.bugwarriorrc``),
+:program:`bugwarrior` looks through the directories in
+``$XDG_CONFIG_DIRS`` for a configuration file named
+``bugwarrior/bugwarriorrc``.
+The directories in ``$XDG_CONFIG_DIRS`` should be separated with a colon ':'.
+If ``$XDG_CONFIG_DIRS`` is either not set or empty, a value equal to
+``/etc/xdg`` is used.
